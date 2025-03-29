@@ -1,351 +1,345 @@
-# Import necessary libraries
-from queue import Queue
 import numpy as np
-from sortedcollections import OrderedSet
-from matplotlib import pyplot as plt
-from matplotlib.patches import Polygon
-import time
-import pygame
-import math
+import cv2
+from queue import PriorityQueue
 
-# Function to generate circle coordinates for the letter "P"
-def generate_p_coordinates(radius, center_x, center_y):
+# Canvas dimensions
+canvas_width = 180
+canvas_height = 50
+
+# Step size for the robot's movement
+step_size = 3
+clearance = 5
+
+V = np.zeros((100, 360, 12), dtype=bool)  # 100x360 grid with 12 theta bins
+
+# Helper function to convert (x, y, θ) into indices for `V`
+def get_indices(x, y, theta):
+    """Convert continuous (x, y, θ) into matrix indices."""
+    x_idx = int(x / 0.5)  # Discretize X (0.5 cm per index)
+    y_idx = int(y / 0.5)  # Discretize Y (0.5 cm per index)
+    theta_idx = int((theta % 360) / 30)  # Convert θ into 12 bins (0° to 330°)
+    return x_idx, y_idx, theta_idx
+
+def get_indices(x, y, theta):
+    """Convert continuous (x, y, θ) into matrix indices."""
+    x_idx = int(x / 0.5)  # Discretize X (0.5 cm per index)
+    y_idx = int(y / 0.5)  # Discretize Y (0.5 cm per index)
+    theta_idx = int((theta % 360) / 30)  # Convert θ into 12 bins (0° to 330°)
+    return x_idx, y_idx, theta_idx
+
+# Define obstacle functions for "E", "N", "P", "M", "1", "6" (as per your provided functions)
+def inside_E(x, y, x0=10+20, y0=35, width=10, height=20, mid_width=7, thickness=3):
+    if x0 <= x <= x0 + thickness and y0 - height <= y <= y0:
+        return True
+    if x0 <= x <= x0 + width and y0 - height <= y <= y0 - height + thickness:
+        return True
+    if x0 <= x <= x0 + mid_width and y0 - height // 2 - thickness // 2 <= y <= y0 - height // 2 + thickness // 2:
+        return True
+    if x0 <= x <= x0 + width and y0 - thickness <= y <= y0:
+        return True
+    return False
+
+def inside_N(x, y, x0=25+20, y0=35, width=10, height=20, thickness=3):
+    if x0 <= x <= x0 + thickness and y0 - height <= y <= y0:
+        return True
+    if x0 + width - thickness <= x <= x0 + width and y0 - height <= y <= y0:
+        return True
+    slope = (2/3)*height / (width - 2 * thickness)
+    y_s = (slope * (x - (x0 + thickness))) + (y0 - height)
+    if x0 + thickness <= x <= x0 + width - thickness and y_s <= y <= y_s + height/3:
+        return True
+    return False
+
+def inside_P(x, y, x0=40+20, y0=35, width=10, height=20, thickness=3):
+    if x0 <= x <= x0 + thickness and y0 - height <= y <= y0:
+        return True
+    curve_x = x0 + thickness
+    curve_y = y0 - (3 * height / 4)
+    curve_r = height / 4
+    if ((x - curve_x) ** 2 + ((y - curve_y) ** 2) <= curve_r ** 2 and y < y0 - height // 2 and x > x0 + thickness):
+        return True
+    return False
+
+def inside_M(x, y, x0=50+20, y0=35, width=15, height=20, thickness=3):
+    if x0 <= x <= x0 + thickness and y0 - height <= y <= y0:
+        return True
+    if x0 + width - thickness <= x <= x0 + width and y0 - height <= y <= y0:
+        return True
+    slope_left = (height / 2) / (width / 2 - thickness)
+    y_left = slope_left * (x - x0 - thickness) + (y0 - height)
+    if x0 + thickness <= x <= x0 + width / 2 and y_left <= y <= y_left + 10:
+        return True
+    slope_right = (-height / 2) / (width / 2 - thickness)
+    y_right = slope_right * (x - (x0 + width / 2)) + (y0 - height / 2)
+    if x0 + width / 2 <= x <= x0 + width - thickness and y_right <= y <= y_right + 10:
+        return True
+    return False
+
+def inside_1(x, y, x0=110+20, y0=35, width=5, height=20, thickness=3):
+    if x0 <= x <= x0 + thickness and y0 - height <= y <= y0:
+        return True
+    return False
+
+def inside_6_second(x, y, x0=(180/2)+20, y0=35, large=20/2, med=13//2, small_radius=8/2, hole_radius=5//2, thickness=3):
+    top_x = x0 + large - thickness  
+    top_y = y0 - large * 1.5
+    inside_top = ((x - top_x) ** 2 + (y - top_y) ** 2) <= 4 ** 2 and x <= top_x
+    mid_x = x0 + large - thickness  
+    mid_y = y0 - large  
+    inside_middle = ((x - mid_x) ** 2 + (y - mid_y) ** 2) <= large ** 2 and x <= mid_x
+    bottom_x = x0 + large - thickness  
+    bottom_y = y0 - med 
+    inside_bottom = ((x - bottom_x) ** 2 + (y - bottom_y) ** 2) <= med ** 2 and x >= bottom_x
+    hole_x = x0 + med  
+    hole_y = y0 - med 
+    inside_hole = ((x - hole_x) ** 2 + (y - hole_y) ** 2) <= hole_radius ** 2  
+    if (inside_bottom or inside_middle) and not inside_top and not inside_hole:
+        return True
+    return False
+
+def inside_6_first(x, y, x0=(145//2)+20, y0=35, large=20/2, med=13//2, small_radius=8/2, hole_radius=5//2, thickness=3):
+    top_x = x0 + large - thickness  
+    top_y = y0 - large * 1.5  
+    inside_top = ((x - top_x) ** 2 + (y - top_y) ** 2) <= 4 ** 2 and x <= top_x
+    mid_x = x0 + large - thickness  
+    mid_y = y0 - large  
+    inside_middle = ((x - mid_x) ** 2 + (y - mid_y) ** 2) <= large ** 2 and x <= mid_x
+    bottom_x = x0 + large - thickness  
+    bottom_y = y0 - med  
+    inside_bottom = ((x - bottom_x) ** 2 + (y - bottom_y) ** 2) <= med ** 2 and x >= bottom_x
+    hole_x = x0 + med  
+    hole_y = y0 - med  
+    inside_hole = ((x - hole_x) ** 2 + (y - hole_y) ** 2) <= hole_radius ** 2  
+    if (inside_bottom or inside_middle) and not inside_top and not inside_hole:
+        return True
+    return False
+
+# (Include other obstacle functions here...)
+
+def clearance_obstacles(grid_width, grid_height, clearance):
     """
-    Generates circle coordinates for a letter "P" with given radius and width.
-    - radius: Radius of the semicircle forming the top part of "P"
-    - center_x, center_y: Positioning the letter "P" in the coordinate space
-    """ 
-    semicircle_offsetcoordinates = []
-    semicircle_coordinates = []
-    for theta in np.linspace(-np.pi/2, np.pi/2, 20):  # Generate half-circle
-        x = center_x + radius * np.cos(theta) 
-        x_offset = x+20
-        y = center_y + radius * np.sin(theta)
-        if theta>0:
-            y_offset = y+20
-        else:
-            y_offset = y-20
-        semicircle_offsetcoordinates.append([x_offset, y_offset])
-        semicircle_coordinates.append([x, y])
-
-    return semicircle_coordinates, semicircle_offsetcoordinates
-
-# Function to generate upper circle coordinates for a digit "6"
-def generate_6_circle(radius, center_x, center_y):
+    Creates an obstacle mask with a clearance region.
+    - Obstacles are BLACK.
+    - Clearance is BLUE.
     """
-    Generates upper circle coordinates for a digit "6" with given radius.
-    - radius: Radius of the semicircle forming the top part of "6"
-    - center_x, center_y: Positioning the digit "6" in the coordinate space
-    """ 
-    semicircle_coordinates = []
-    semicircle_offsetcoordinates = []
+    # Initialize obstacle mask
+    obstacle_mask = np.zeros((grid_height, grid_width), dtype=np.uint8)
 
-    for theta in np.linspace(-np.pi, np.pi, 20): 
-        x = center_x + radius * np.sin(theta)   
-        x_offset = center_x + (radius + 20) * np.sin(theta)
-        y = center_y - radius * np.cos(theta)
-        y_offset = center_y - (radius + 20) * np.cos(theta)
-        
-        semicircle_coordinates.append([x, y])
-        semicircle_offsetcoordinates.append([x_offset, y_offset])
+    # Combine all letter/number obstacle checks into one list
+    shapes = [inside_E, inside_N, inside_P, inside_M, inside_1, inside_6_second, inside_6_first]
 
-    return semicircle_coordinates, semicircle_offsetcoordinates
+    # For each shape, mark obstacles
+    for y in range(grid_height):
+        for x in range(grid_width):
+            if any(shape(x, y) for shape in shapes):
+                obstacle_mask[y, x] = 255  # Mark obstacle pixels
 
-# Function to generate full circle coordinates for a digit "6"
-def generate_6_coordinates(radius, center_x, center_y):
+    # Expand clearance using OpenCV dilation
+    kernel = np.ones((clearance, clearance), np.uint8)
+    clearance_mask = cv2.dilate(obstacle_mask, kernel, iterations=1)
+
+    # Ensure obstacles remain distinct (do not overwrite obstacles)
+    clearance_mask[obstacle_mask == 255] = 255
+
+    # Mark the boundary as part of clearance
+    clearance_mask[0:clearance, :] = 255  # Top boundary as clearance
+    clearance_mask[-clearance:, :] = 255  # Bottom boundary as clearance
+    clearance_mask[:, 0:clearance] = 255  # Left boundary as clearance
+    clearance_mask[:, -clearance:] = 255  # Right boundary as clearance
+
+    return obstacle_mask, clearance_mask
+
+
+# Action functions for movement
+def move_0(x, y, Θ):
+    return x + step_size * np.cos(np.radians(Θ)), y + step_size * np.sin(np.radians(Θ))
+
+def move_neg30(x, y, Θ):
+    return x + step_size * np.cos(np.radians(Θ - 30)), y + step_size * np.sin(np.radians(Θ - 30))
+
+def move_neg60(x, y, Θ):
+    return x + step_size * np.cos(np.radians(Θ - 60)), y + step_size * np.sin(np.radians(Θ - 60))
+
+def move_30(x, y, Θ):
+    return x + step_size * np.cos(np.radians(Θ + 30)), y + step_size * np.sin(np.radians(Θ + 30))
+
+def move_60(x, y, Θ):
+    return x + step_size * np.cos(np.radians(Θ + 60)), y + step_size * np.sin(np.radians(Θ + 60))
+
+# Euclidean distance function
+def euclidean_distance(node1, node2):
+    return np.sqrt((node1[0] - node2[0])**2 + (node1[1] - node2[1])**2)
+
+# Goal checking function (within threshold)
+def is_goal_reached(x, y, goal_x, goal_y):
+    return euclidean_distance((x, y), (goal_x, goal_y)) <= 1.5  # Goal threshold distance of 1.5 units
+
+
+# A* algorithm with live visualization of exploration
+def a_star(start, goal, clearance_mask, obstacle_mask, workspace):
+    open_list = PriorityQueue()
+    parent = {}  # Track parents for path reconstruction
+
+    sx, sy, stheta = start
+    start_idx = get_indices(sx, sy, stheta)
+
+    open_list.put((0, start))
+    V[start_idx[1], start_idx[0], start_idx[2]] = True  # Mark start as visited
+
+    while not open_list.empty():
+        _, current = open_list.get()
+        cx, cy, ctheta = current
+        current_idx = get_indices(cx, cy, ctheta)
+
+        # Check if goal is reached
+        if is_goal_reached(cx, cy, goal[0], goal[1]):
+            path = []
+            while current in parent:
+                path.append(current)
+                current = parent[current]
+            path.append(start)
+            # Draw the final path on the workspace
+            for px, py, _ in path:
+                workspace[int(py), int(px)] = (0, 0, 255)  # Red color for the path
+            return path[::-1]  # Reverse path order
+
+        for action in [move_0, move_neg30, move_neg60, move_30, move_60]:
+            nx, ny = action(cx, cy, ctheta)
+            next_theta = (ctheta + 360) % 360  # Keep θ in range [0, 360)
+            next_idx = get_indices(nx, ny, next_theta)
+
+            # Bounds check and obstacle check
+            if not (0 <= nx < canvas_width and 0 <= ny < canvas_height):  # Bounds check
+                continue
+            if clearance_mask[int(ny), int(nx)] == 255 or obstacle_mask[int(ny), int(nx)] == 255:
+                continue
+            if V[next_idx[1], next_idx[0], next_idx[2]]:  # Skip visited nodes
+                continue
+
+            # Mark as visited
+            V[next_idx[1], next_idx[0], next_idx[2]] = True
+            g_cost = euclidean_distance(start, (nx, ny))
+            h_cost = euclidean_distance((nx, ny), goal)
+            f_cost = g_cost + h_cost
+            open_list.put((f_cost, (nx, ny, next_theta)))
+            parent[(nx, ny, next_theta)] = current
+
+            # Update visualization for each step (exploration) - leave a trail of explored nodes
+            workspace[int(ny), int(nx)] = (0, 255, 0)  # Green for explored node
+            cv2.imshow("A* Live Exploration", cv2.resize(workspace, (720, 200)))
+            cv2.waitKey(1)
+
+    return None  # No path found
+
+# Pathfinding process (example usage with live visualization)
+def visualize_path_with_arrows(workspace, path):
+    for i in range(len(path) - 1):
+        x1, y1, _ = path[i]
+        x2, y2, _ = path[i + 1]
+
+        # Convert to integers for OpenCV functions
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+        # Draw arrows between consecutive points
+        cv2.arrowedLine(workspace, (x1, y1), (x2, y2), (0, 0, 255), 1, tipLength=0.4)
+
+    # Show the final path with arrows
+    cv2.imshow("Final Path with Arrows", cv2.resize(workspace, (720, 200)))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+def get_start_goal_inputs(obstacle_mask, clearance_mask):
     """
-    Generates bigger circle coordinates for a digit "6" with given radius.
-    - radius: Radius of the circular part
-    - center_x, center_y: Positioning the digit "6" in the coordinate space
-    """ 
-    full_circle_coordinates = []
-    full_circle_offsetcoordinates = []
+    Gets start and goal positions from user input (x, y, theta).
+    Validates inputs against obstacle and clearance masks.
+    """
+    def get_input(node_type):
+        """Helper function to get node input."""
+        while True:
+            try:
+                print(f"\n===== {node_type.upper()} NODE =====")
+                x = float(input(f"Enter {node_type} X (0-180): "))
+                y = float(input(f"Enter {node_type} Y (0-50): "))
+                theta = float(input(f"Enter {node_type} Theta (0-360): "))
+                
+                # Check if within canvas bounds (as in your code)
+                if not (0 <= x <= 180 and 0 <= y <= 50):
+                    print("Out of range.")
+                    continue
+                
+                # Check clearance zone (as in your code)
+                if x < 5 or x > 175 or y > 45 or y < 5:
+                    print("In boundary clearance.")
+                    continue
+                
+                # Check if in obstacle
+                if obstacle_mask[int(y), int(x)] == 255:
+                    print("In obstacle.")
+                    continue
+                
+                # Check if in clearance zone around obstacles
+                if clearance_mask[int(y), int(x)] == 255 and obstacle_mask[int(y), int(x)] == 0:
+                    print("In obstacle clearance zone.")
+                    continue
+                
+                # Normalize theta to 0-360 range
+                theta = theta % 360
+                
+                print(f"{node_type.capitalize()} position ({x:.1f}, {y:.1f}, {theta:.1f}°) is valid.")
+                return (x, y, theta)
+                
+            except ValueError:
+                print("Invalid input.")
+                return None
+            except IndexError:
+                print("Coordinates out of bounds for array access.")
+                continue
+
+    # Get start and goal positions
+    print("\n===== PATH PLANNING CONFIGURATION =====")
+    print("Canvas dimensions: 180x50")
+    print("Please enter coordinates between (5-175, 5-45) to avoid boundary clearance.\n")
     
-    # Generate a full circle
-    for theta in np.linspace(0, 2*np.pi, 40):  # Full circle
-        x = center_x + (radius) * np.cos(theta) 
-        x_offset = center_x + (radius+20) * np.cos(theta) 
-        y_offset = center_y + (radius+20) * np.sin(theta)
-        y = center_y + (radius) * np.sin(theta)
-       
-        full_circle_coordinates.append([x, y])
-        full_circle_offsetcoordinates.append([x_offset, y_offset])
+    start = get_input("start")
+    if start is None:
+        return None, None
+        
+    goal = get_input("goal")
+    if goal is None:
+        return None, None
     
-    return full_circle_coordinates, full_circle_offsetcoordinates 
-
-# Initialize a canvas with zeros
-canvas = np.full((1800, 500), 0)
-
-# Define polygon coordinates for letters and numbers
-e_polygon_coordinates =       [[200,110],[330,110],[330,160],[250,160],[250,210],[330,210],[330,260],[250,260],[250,310],[330,310],[330,360],[200,360]]
-e_polygon_offsetcoordinates = [[180,90],[350,90], [350,180],[270,180],[270,180],[350,180],[350,280],[270,280],[270,280],[350,280],[350,380],[180,380]]
-
-n_polygon_coordinates = [[390,110],[440,110],[440,240],[490,110],[540,110],[540,360],[490,360],[490,240],[440,360],[390,360]]
-n_polygon_offsetcoordinates = [[370,90],[460,90],[460,240],[470,90],[560,90],[560,380],[470,380],[470,240],[460,380],[370,380]]
-
-# Generate coordinates for the letter "P"
-p_polygon_coordinates, p_polygon_offsetcoordinates = generate_p_coordinates(60, 650, 300)
-p_stem_coordinates = [[600,360],[650,360],[650,110],[600,110]]
-p_stem_offsetcoordinates = [[580,380],[670,380],[670,90],[580,90]]
-
-m_polygon_coordinates = [[770,110],[820,110],[820,240],[840,110],[910,110],[930,240],[930,110],[980,110],[980,360],[930,360],[900,160],[850,160],[820,360],[770,360]]
-m_polygon_offsetcoordinates = [[750,90],[840,90],[840,240],[840,90],[930,90],[930,240],[930,90],[1000,90],[1000,380],[910,380],[900,160],[850,160],[840,380],[750,380]]
-
-# Generate coordinates for the digit "6"
-polygon_coordinates_6, polygon_offsetcoordinates_6 = generate_6_coordinates(90,1130,200)
-polygon_stem_coordinates_6 = [[1040,200],[1040,360],[1090,360],[1090,200]]
-polygon_stem_offsetcoordinates_6 = [[1020,180],[1020,380],[1110,380],[1110,200]]
-polygon_stem_6_circle, polygon_stem_6_circleoffset = generate_6_circle(25,1065,360)
-
-# Generate coordinates for another "6"
-polygon2_coordinates_6, polygon2_offsetcoordinates_6 = generate_6_coordinates(90,1370,200)
-polygon2_stem_coordinates_6 = [[1280,200],[1280,360],[1330,360],[1330,200]]
-polygon2_stem_offsetcoordinates_6 = [[1260,180],[1260,380],[1350,380],[1350,200]]
-polygon2_stem_6_circle, polygon2_stem_6_circleoffset = generate_6_circle(25,1305,360)
-
-# Generate coordinates for the digit "1"
-polygon_coordinates_1 = [[1520,110],[1570,110],[1570,390],[1520,390]]
-polygon_offsetcoordinates_1 = [[1500,90],[1590,90],[1590,410],[1500,410]]
-
-# Create polygon objects for each letter and number
-polygon_e = Polygon(e_polygon_offsetcoordinates, closed=True)
-polygon_n = Polygon(n_polygon_offsetcoordinates, closed=True)
-polygon_p = Polygon(p_polygon_offsetcoordinates, closed=True)
-stem_p = Polygon(p_stem_offsetcoordinates, closed = True)
-polygon_m = Polygon(m_polygon_offsetcoordinates, closed=True)
-
-polygon_6 = Polygon(polygon_offsetcoordinates_6, closed=True)
-polygon_6_stem = Polygon(polygon_stem_offsetcoordinates_6, closed=True)
-polygon_6_stem_circle = Polygon(polygon_stem_6_circleoffset, closed=True)
-
-polygon2_6 = Polygon(polygon2_offsetcoordinates_6, closed=True)
-polygon2_6_stem = Polygon(polygon2_stem_offsetcoordinates_6, closed=True)
-polygon2_6_stem_circle = Polygon(polygon2_stem_6_circleoffset, closed=True)
-
-polygon_1 = Polygon(polygon_offsetcoordinates_1, closed=True)
-
-# Set boundaries of the canvas
-canvas[0:5,:], canvas[1795:,:], canvas[:,0:5], canvas[:,495:] = 1,1,1,1
-
-# List of polygons representing obstacles
-obstacles = [
-    polygon_e, polygon_n, polygon_p, stem_p, polygon_m,
-    polygon_6, polygon_6_stem, polygon_6_stem_circle,
-    polygon2_6, polygon2_6_stem, polygon2_6_stem_circle,
-    polygon_1
-]
-
-# Iterate through each pixel on the canvas and mark obstacles
-for y in range(500):
-    for x in range(1800):
-        for theta in range(360):
-            for obstacle in obstacles:
-                if obstacle.contains_point((x, y,theta)):
-                    canvas[x, y,theta] = 1
-                    break  # No need to check other obstacles once marked
-
-# Function to convert coordinates for pygame
-def coords_pygame(coords, height):
-    """
-    Converts coordinates to pygame format by flipping the y-axis.
-    """
-    return (coords[0], height - coords[1])
-
-def create_map(visit, backtrack, start, Goal):
-    """
-    Visualizes the path on a map using pygame.
-    """
-    pygame.init()
-    size = [1800, 500]
-    screen = pygame.display.set_mode(size)
-    pygame.display.set_caption("BFS - Amogha Sunil")
-
-    done = False
-    while not done:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                done = True
-        screen.fill("white")
-        
-        # List of polygons to draw with interesting colors
-        polygons = [
-            (e_polygon_coordinates, (255, 0, 0)),  # Red
-            (n_polygon_coordinates, (0, 0, 255)),  # Blue
-            (p_polygon_coordinates, (0, 255, 0)),  # Green
-            (p_stem_coordinates, (0, 255, 0)),  # Green
-            (m_polygon_coordinates, (255, 165, 0)),  # Orange
-            (polygon_coordinates_6, (128, 0, 128)),  # Purple
-            (polygon_stem_coordinates_6, (128, 0, 128)),  # Purple
-            (polygon_stem_6_circle, (128, 0, 128)),  # Purple
-            (polygon2_coordinates_6, (75, 0, 130)),  # Deep Purple
-            (polygon2_stem_coordinates_6, (75, 0, 130)),  # Deep Purple
-            (polygon2_stem_6_circle, (75, 0, 130)),  # Deep Purple
-            (polygon_coordinates_1, (255, 255, 0))  # Yellow
-        ]
-        
-        # Convert and draw polygons
-        for polygon, color in polygons:
-            pygame_polygon = [coords_pygame(point, 500) for point in polygon]
-            pygame.draw.polygon(screen, color, pygame_polygon, 0)
-        
-        # Draw boundary
-        pygame.draw.rect(screen, "blue", [0,0, 1800, 500], 5)
-        
-        # Draw visited nodes
-        n = 0
-        for j in visit:
-            n += 1
-            pygame.draw.circle(screen, (50, 137, 131), coords_pygame(j, 500), 1)
-            if n % 50 == 0:
-                pygame.display.update()
-        
-        # Draw start and goal points
-        pygame.draw.circle(screen, (0, 255, 0), coords_pygame(start, 500), -3)
-        pygame.draw.circle(screen, (0, 255, 0), coords_pygame(Goal, 500), -3)
-        
-        # Draw the path
-        for i in backtrack:
-            pygame.draw.circle(screen, (255, 255, 0), coords_pygame(i, 500), 1)
-            pygame.display.update()
-        pygame.draw.circle(screen, (255, 255, 0), coords_pygame(start, 500), 1)
-        pygame.draw.circle(screen, (255, 255, 0), coords_pygame(Goal, 500), 1)
-        
-        done = True
-    pygame.time.wait(5000)
-    pygame.quit()
-
-# Function to check if a point is an obstacle  (OK)
-def check_obstacles(coordinates):
-    """
-    Checks if a point lies on an obstacle.
-    """
-    if canvas[coordinates[0], coordinates[1],coordinates[2]] == 1:
-        return False
-    return True
-
-# Function to input start or goal position
-# modify the inputs to include theta
-
-def input_start(prompt):   
-    """
-    Prompts user to input a start or goal position.
-    """
+    # Display final configuration
+    print("\n===== CONFIGURATION SUMMARY =====")
+    print(f"Start: ({start[0]:.1f}, {start[1]:.1f}), Orientation: {start[2]:.1f}°")
+    print(f"Goal: ({goal[0]:.1f}, {goal[1]:.1f}), Orientation: {goal[2]:.1f}°")
+    print("Calculating path...\n")
     
-    while True:
-        print("Enter", prompt, "node (x,y,θ) (x between 5 and 594, y between 5 and 244, θ in multiples of 30°) ")
-        print("Sample Input: 10,10,0")
-        input_str = input()
-        A = [int(i) for i in input_str.split(',')]
-        A_1 = (A[0], A[1],A[2])
-        if not (0 <= A[0] < 1800 and 0 <= A[1] < 500 and 0 <= A[2] < 360):  # Check if the input is within bounds (0 to 360 or -180 to 180)
-            print("Enter valid input (x between 5 and 1794, y between 5 and 494)")
-        elif not check_obstacles(A_1):
-            print("The entered input lies on the obstacles or is not valid, please try again")
-        else:
-            return A_1
+    return start, goal
 
-def a_star():
-    start_time = time.time()  # Calculate the time required to run
-    
-    # Initialize a queue with the start position
-    Q = Queue()
-    Q.put(Start)
-    
-    # Initialize a set to keep track of visited nodes
-    visit = OrderedSet()
-    visit.add(Start)
-    
-    # Initialize a dictionary to keep track of the path
-    Path = {}
-    
-    while not Q.empty():
-        current_node = Q.get()
-        
-        # Check if the goal is reached
-        if current_node == goal:
-            print('success')
-            # Generate and print the path
-            Backtrack = generate_path_bfs(Path, Start, goal)
-            print(Backtrack)
-            print('-----------')
-            end_time = time.time()
-            path_time = end_time - start_time
-            print('Time to calculate path:', path_time, 'seconds')
-            # Visualize the path using pygame
-            create_map(visit, Backtrack, Start, goal)
-            break
-        
-        # # Explore all possible moves from the current node
-        # movements = [        
-        #     (0, 1),  # Up
-        #     (0, -1),  # Down
-        #     (-1, 0),  # Left
-        #     (1, 0),  # Right
-        #     (-1, 1),  # Up-left
-        #     (1, 1),  # Up-right
-        #     (-1, -1),  # Down-left
-        #     (1, -1)  # Down-right
-        # ]
-        
-        # Define the 5 actions
-        step_size = 1  # Define the step size (can be adjusted or taken as input)
-        actions = [
-            # Forward
-            (step_size * math.cos(math.radians(current_node[2])), 
-            step_size * math.sin(math.radians(current_node[2])), 
-            0),
-            
-            # Forward Left (30° left)
-            (step_size * math.cos(math.radians(current_node[2] + 30)), 
-            step_size * math.sin(math.radians(current_node[2] + 30)), 
-            30),
-            
-            # Forward Right (30° right)
-            (step_size * math.cos(math.radians(current_node[2] - 30)), 
-            step_size * math.sin(math.radians(current_node[2] - 30)), 
-            -30),
-            
-            # Left Turn (60° left)
-            (step_size * math.cos(math.radians(current_node[2] + 60)), 
-            step_size * math.sin(math.radians(current_node[2] + 60)), 
-            60),
-            
-            # Right Turn (60° right)
-            (step_size * math.cos(math.radians(current_node[2] - 60)), 
-            step_size * math.sin(math.radians(current_node[2] - 60)), 
-            -60)
-        ]
+# Generate obstacle and clearance masks
+obstacle_mask, clearance_mask = clearance_obstacles(canvas_width, canvas_height, clearance)
 
-        for dx, dy,dtheta in actions:
-            new_x, new_y,new_theta = current_node[0] + dx, current_node[1] + dy,current_node[2]+dtheta
-            # new_theta = new_theta % 360 
-            
-            # Check if the new position is within bounds and not an obstacle
-            if (0 <= new_x < 250) and (0 <= new_y < 600 and 0<=new_theta <360) and check_obstacles((new_x, new_y,new_theta)) and (new_x, new_y,new_theta) not in visit:
-                Q.put((new_x, new_y,new_theta))
-                visit.add((new_x, new_y,new_theta))
-                Path[(new_x, new_y,new_theta)] = current_node
+# Get user inputs with validation against masks
+start, goal = get_start_goal_inputs(obstacle_mask, clearance_mask)
 
+# Create visualization workspace
+workspace = np.ones((canvas_height, canvas_width, 3), dtype=np.uint8) * 255
 
-def generate_path_bfs(path, start, goal):
-    """
-    Reconstructs the path from the goal to the start using backtracking.
-    """
-    backtrack = []
-    key = path.get(goal)
-    backtrack.append(goal)
-    backtrack.append(key)
-    while (key != start):
-        key = path.get(key)
-        backtrack.append(key)
-    backtrack.reverse()
-    return backtrack
+# Draw obstacles in BLACK
+workspace[np.where(obstacle_mask == 255)] = (0, 0, 0)  # Obstacles black
 
+# Mark the clearance area around obstacles in blue
+clearance_region = np.where((clearance_mask == 255) & (obstacle_mask == 0))
 
-visit = OrderedSet()
-touch = {}
-Path = {}
-Start = input_start('Start Position')
-goal = input_start('Goal Position')
-print(Start, goal)
-a_star()
+# Set clearance region to BLUE
+workspace[clearance_region] = (255, 0, 0)
+
+# Run A* search algorithm with live exploration
+path = a_star(start, goal, clearance_mask, obstacle_mask, workspace)
+
+# If a path is found, visualize it with arrows on the same map
+if path:
+    visualize_path_with_arrows(workspace, path)
+else:
+    print("No path found")
+
