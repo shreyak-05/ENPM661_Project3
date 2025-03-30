@@ -49,7 +49,7 @@ In this implementation, the heuristic function `h(n)` is the Euclidean distance 
 2.  **Run the A* Algorithm:**
 
     ```bash
-    python3 Project3_Amogha_Sagar_Shreya.py
+    python3 Proj3_Amogha_Sagar_Shreya.py
     ```
 
 3.  **Input Start and Goal Positions:**
