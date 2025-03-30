@@ -70,11 +70,11 @@ In this implementation, the heuristic function `h(n)` is the Euclidean distance 
 ## Team Members
 
 * Amogha
-    * Directory ID: [Your Directory ID]
-    * UID: [Your UID]
+    * Directory ID: amoghats
+
 * Sagar
-    * Directory ID: [Sagar's Directory ID]
-    * UID: [Sagar's UID]
+    * Directory ID: sagvijay
+
 * Shreya
     * Directory ID: shreya05
-    * UID: 121166647
+
